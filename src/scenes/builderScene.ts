@@ -31,7 +31,9 @@ import { round } from '../helpers/roundTo';
 
 const MOUSE_SENSITIVITY = 0.0002;
 const MAP_SIZE = 80;
-const GRID = 0.5;
+const GRID = 0.25;
+
+const BLOCK_HEIGHT = 0.5;
 
 export class BuilderScene {
 	private readonly _scene: Scene;
@@ -42,7 +44,10 @@ export class BuilderScene {
 	private _keys = { left: false, right: false, forward: false, back: false };
 	private _meshes: Mesh[] = []; // TODO make more efficient storage structure based on 2d grid of coordinates
 	private _lookAtPoint: Nullable<Vector3> = null;
-	private _cementMaterial: StandardMaterial;
+	private readonly _cementMaterial: StandardMaterial;
+	private _cementBlock: Mesh;
+	private _ghostBlock: Mesh;
+	private _placementAngle: number;
 
 	get activeCamera(): Camera {
 		return this._activeCamera;
@@ -91,17 +96,6 @@ export class BuilderScene {
 
 		this._meshes.push(sphere);
 
-		// intersection indicator
-		const intersectionMaterial = new StandardMaterial('intersectionPointMat', this._scene);
-		intersectionMaterial.diffuseColor = new Color3(1, 0, 0);
-		const intersectionSphere = CreateSphere(
-			'intersectionSphere',
-			{ diameter: 0.1, segments: 8 },
-			this._scene
-		);
-		intersectionSphere.material = intersectionMaterial;
-		intersectionSphere.position = new Vector3(0, -1, 0); // Hide under the plane
-
 		// Cement texture for blocks
 		this._cementMaterial = new StandardMaterial('cementMat', this._scene);
 		const texture = new Texture(cementImage, this._scene);
@@ -110,6 +104,27 @@ export class BuilderScene {
 		this._cementMaterial.diffuseTexture = texture;
 		this._cementMaterial.specularColor = Color3.Black();
 		this._cementMaterial.emissiveColor = Color3.White();
+		const boxSize = {
+			width: 0.5,
+			height: BLOCK_HEIGHT,
+			depth: 1,
+		};
+		this._cementBlock = CreateBox(
+			'box_' + Math.random().toString().substring(2, 9),
+			{ ...boxSize },
+			this._scene
+		);
+		this._cementBlock.material = this._cementMaterial;
+		this._cementBlock.checkCollisions = true;
+
+		this._ghostBlock = this._cementBlock.clone('ghostBlock');
+		const ghostCementMaterial = this._cementBlock.material.clone(
+			'ghostCementMat'
+		) as StandardMaterial;
+		ghostCementMaterial.alpha = 0.4;
+		this._ghostBlock.material = ghostCementMaterial;
+
+		this._placementAngle = 0;
 
 		// load 3d model
 		// const model =
@@ -229,6 +244,14 @@ export class BuilderScene {
 		if (evt.keyCode == KEYCODE.KEY_S) {
 			this._keys.back = false;
 		}
+
+		// rotate placement block
+		if (evt.keyCode == KEYCODE.KEY_A) {
+			this._placementAngle += (45 / 180) * Math.PI;
+		}
+		if (evt.keyCode == KEYCODE.KEY_E) {
+			this._placementAngle -= (45 / 180) * Math.PI;
+		}
 	}
 
 	private handleKeyDown(evt: KeyboardEvent) {
@@ -277,24 +300,16 @@ export class BuilderScene {
 			console.log('click');
 
 			if (this._lookAtPoint) {
-				const boxSize = {
-					width: 0.5,
-					height: 0.5,
-					depth: 1,
-				};
-				const box = CreateBox(
-					'box_' + Math.random().toString().substring(2, 9),
-					{ ...boxSize },
-					scene
+				const newBlock = this._cementBlock.clone(
+					'box_' + Math.random().toString().substring(2, 9)
 				);
-				box.material = this._cementMaterial;
-				box.position = new Vector3(
+				newBlock.position = new Vector3(
 					round(this._lookAtPoint.x, GRID),
-					round(this._lookAtPoint.y, GRID) + boxSize.height / 2,
+					round(this._lookAtPoint.y, GRID) + BLOCK_HEIGHT / 2,
 					round(this._lookAtPoint.z, GRID)
 				);
-				box.checkCollisions = true;
-				this._meshes.push(box);
+				newBlock.rotation = new Vector3(0, this._placementAngle, 0);
+				this._meshes.push(newBlock);
 			}
 		});
 
@@ -333,10 +348,6 @@ export class BuilderScene {
 	}
 
 	private updateLookAtPoint() {
-		const intersectionSphere = this._scene.getNodeByName(
-			'intersectionSphere'
-		) as Nullable<TransformNode>;
-
 		const pickingRay = this._activeCamera.getForwardRay(
 			undefined,
 			undefined,
@@ -345,21 +356,19 @@ export class BuilderScene {
 
 		const intersections = pickingRay.intersectsMeshes(this._meshes);
 
-		if (!intersectionSphere) {
-			return;
-		}
 		if (!intersections?.length) {
 			this._lookAtPoint = null;
-			intersectionSphere.position = new Vector3(0, -1, 0);
+			this._ghostBlock.position = new Vector3(0, -1, 0);
 			return;
 		}
 		if (intersections[0].hit && intersections[0].pickedPoint) {
 			this._lookAtPoint = intersections[0].pickedPoint;
-			intersectionSphere.position = new Vector3(
+			this._ghostBlock.position = new Vector3(
 				round(this._lookAtPoint.x, GRID),
-				round(this._lookAtPoint.y, GRID),
+				round(this._lookAtPoint.y, GRID) + BLOCK_HEIGHT / 2,
 				round(this._lookAtPoint.z, GRID)
 			);
+			this._ghostBlock.rotation = new Vector3(0, this._placementAngle, 0);
 		}
 	}
 
