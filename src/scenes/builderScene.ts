@@ -1,6 +1,6 @@
 import { Engine } from '@babylonjs/core/Engines/engine';
 import { Scene } from '@babylonjs/core/scene';
-import { Matrix, Quaternion, Vector3 } from '@babylonjs/core/Maths/math.vector';
+import { Quaternion, Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 
 // If you don't need the standard material you will still need to import it since the scene requires it.
@@ -11,28 +11,38 @@ import '@babylonjs/core/Lights/Shadows/shadowGeneratorSceneComponent';
 import {
 	Camera,
 	Color3,
+	CreateBox,
 	CreateSphere,
 	CubeTexture,
 	HemisphericLight,
+	Mesh,
 	MeshBuilder,
+	Nullable,
 	TransformNode,
 	UniversalCamera,
 } from '@babylonjs/core';
 import { AdvancedDynamicTexture, Button, Image } from '@babylonjs/gui';
 import { KEYCODE } from '../keycodes';
-
-import circleImage from '../../assets/circle.svg';
-import groundImage from '../../assets/ground.png';
+import circleImage from '../../public/textures/circle.svg';
+import groundImage from '../../public/textures/ground.png';
+import cementImage from '../../public/textures/cement.jpg';
+import { GroundMesh } from '@babylonjs/core/Meshes/groundMesh';
+import { round } from '../helpers/roundTo';
 
 const MOUSE_SENSITIVITY = 0.0002;
 const MAP_SIZE = 80;
+const GRID = 0.5;
 
 export class BuilderScene {
 	private readonly _scene: Scene;
+	private readonly _ground: GroundMesh;
 	private readonly _player: TransformNode;
 	private readonly _activeCamera: Camera;
 	private readonly _cameraNode: TransformNode;
 	private _keys = { left: false, right: false, forward: false, back: false };
+	private _meshes: Mesh[] = []; // TODO make more efficient storage structure based on 2d grid of coordinates
+	private _lookAtPoint: Nullable<Vector3> = null;
+	private _cementMaterial: StandardMaterial;
 
 	get activeCamera(): Camera {
 		return this._activeCamera;
@@ -43,6 +53,7 @@ export class BuilderScene {
 		// This creates a basic Babylon Scene object (non-mesh)
 		this._scene = new Scene(this._engine);
 		this._scene.useRightHandedSystem = true;
+		this._scene.collisionsEnabled = true;
 		this._scene.gravity = new Vector3(0, -0.15, 0);
 		BuilderScene.setupSun(this._scene);
 
@@ -59,7 +70,8 @@ export class BuilderScene {
 		// });
 
 		BuilderScene.setupSkybox(this._scene);
-		BuilderScene.setupGroundPlane(this._scene);
+		this._ground = BuilderScene.setupGroundPlane(this._scene);
+		this._meshes.push(this._ground);
 
 		BuilderScene.setupCrosshair();
 
@@ -76,6 +88,35 @@ export class BuilderScene {
 		// Move the sphere upward 1/2 its height
 		sphere.position.y = 1;
 		sphere.position.x = -2;
+
+		this._meshes.push(sphere);
+
+		// intersection indicator
+		const intersectionMaterial = new StandardMaterial('intersectionPointMat', this._scene);
+		intersectionMaterial.diffuseColor = new Color3(1, 0, 0);
+		const intersectionSphere = CreateSphere(
+			'intersectionSphere',
+			{ diameter: 0.1, segments: 8 },
+			this._scene
+		);
+		intersectionSphere.material = intersectionMaterial;
+		intersectionSphere.position = new Vector3(0, -1, 0); // Hide under the plane
+
+		// Cement texture for blocks
+		this._cementMaterial = new StandardMaterial('cementMat', this._scene);
+		const texture = new Texture(cementImage, this._scene);
+		texture.uScale = 0.5;
+		texture.vScale = 1;
+		this._cementMaterial.diffuseTexture = texture;
+		this._cementMaterial.specularColor = Color3.Black();
+		this._cementMaterial.emissiveColor = Color3.White();
+
+		// load 3d model
+		// const model =
+		// var base64_model_content = "data:;base64,";
+		// BABYLON.SceneLoader.Append("", base64_model_content, scene, function (scene) {
+		//     // do something with the scene
+		// });
 
 		// const shadowGenerator = new ShadowGenerator(512, light)
 		// shadowGenerator.useBlurExponentialShadowMap = true;
@@ -145,7 +186,7 @@ export class BuilderScene {
 		skybox.material = skyboxMaterial;
 	}
 
-	private static setupGroundPlane(scene: Scene) {
+	private static setupGroundPlane(scene: Scene): GroundMesh {
 		const mat1 = new StandardMaterial('mat0', scene);
 		const texture = new Texture(groundImage, scene);
 		texture.uScale = MAP_SIZE;
@@ -159,6 +200,8 @@ export class BuilderScene {
 			scene
 		);
 		ground.material = mat1;
+
+		return ground;
 	}
 
 	private static setupCrosshair() {
@@ -209,6 +252,8 @@ export class BuilderScene {
 	): [TransformNode, Camera, TransformNode] {
 		const tempCamera = new UniversalCamera('FPS', new Vector3(0, 0, 0), scene);
 		tempCamera.attachControl(canvas, true);
+		tempCamera.checkCollisions = true;
+		tempCamera.ellipsoid = new Vector3(1, 1.8, 1);
 		scene.activeCameras?.push(tempCamera);
 
 		const tempPlayer = new TransformNode('player', scene);
@@ -217,14 +262,40 @@ export class BuilderScene {
 		tempCamera.minZ = 0.0001;
 		tempPlayer.parent = tempCamera;
 		tempCamera.parent = tempCameraNode;
-		tempCamera.position.y = 1;
+		tempCameraNode.position.x = 2;
+		tempCameraNode.position.y = 1;
+		tempCameraNode.position.z = 2;
+		tempCameraNode.rotation = new Vector3(0, (45 / 180) * Math.PI, 0);
+		tempCamera.applyGravity = true;
+		scene.gravity = new Vector3(0, -9.81, 0);
 
 		// Event listener for mouse keys
 		canvas.addEventListener('pointerup', () => {
 			// ignore up events
 		});
-		canvas.addEventListener('pointerdown', function () {
+		canvas.addEventListener('pointerdown', () => {
 			console.log('click');
+
+			if (this._lookAtPoint) {
+				const boxSize = {
+					width: 0.5,
+					height: 0.5,
+					depth: 1,
+				};
+				const box = CreateBox(
+					'box_' + Math.random().toString().substring(2, 9),
+					{ ...boxSize },
+					scene
+				);
+				box.material = this._cementMaterial;
+				box.position = new Vector3(
+					round(this._lookAtPoint.x, GRID),
+					round(this._lookAtPoint.y, GRID) + boxSize.height / 2,
+					round(this._lookAtPoint.z, GRID)
+				);
+				box.checkCollisions = true;
+				this._meshes.push(box);
+			}
 		});
 
 		// Event listener for WASD movement keys
@@ -234,7 +305,7 @@ export class BuilderScene {
 		return [tempPlayer, tempCamera, tempCameraNode];
 	}
 
-	private update() {
+	private updateMovement() {
 		const cameraDirection = this._activeCamera
 			.getForwardRay()
 			.direction.normalizeFromLength(10);
@@ -259,6 +330,42 @@ export class BuilderScene {
 		if (this._keys.back) {
 			this._cameraNode.position.addInPlace(cameraDirectionPlane.negate());
 		}
+	}
+
+	private updateLookAtPoint() {
+		const intersectionSphere = this._scene.getNodeByName(
+			'intersectionSphere'
+		) as Nullable<TransformNode>;
+
+		const pickingRay = this._activeCamera.getForwardRay(
+			undefined,
+			undefined,
+			this._cameraNode.position
+		);
+
+		const intersections = pickingRay.intersectsMeshes(this._meshes);
+
+		if (!intersectionSphere) {
+			return;
+		}
+		if (!intersections?.length) {
+			this._lookAtPoint = null;
+			intersectionSphere.position = new Vector3(0, -1, 0);
+			return;
+		}
+		if (intersections[0].hit && intersections[0].pickedPoint) {
+			this._lookAtPoint = intersections[0].pickedPoint;
+			intersectionSphere.position = new Vector3(
+				round(this._lookAtPoint.x, GRID),
+				round(this._lookAtPoint.y, GRID),
+				round(this._lookAtPoint.z, GRID)
+			);
+		}
+	}
+
+	private update() {
+		this.updateMovement();
+		this.updateLookAtPoint();
 	}
 
 	render() {
