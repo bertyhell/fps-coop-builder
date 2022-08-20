@@ -1,6 +1,6 @@
 import { Engine } from '@babylonjs/core/Engines/engine';
 import { Scene } from '@babylonjs/core/scene';
-import { Quaternion, Vector3 } from '@babylonjs/core/Maths/math.vector';
+import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 
 // If you don't need the standard material you will still need to import it since the scene requires it.
@@ -9,6 +9,7 @@ import { Texture } from '@babylonjs/core/Materials/Textures/texture';
 
 import '@babylonjs/core/Lights/Shadows/shadowGeneratorSceneComponent';
 import {
+	AbstractMesh,
 	Camera,
 	Color3,
 	CreateBox,
@@ -18,7 +19,6 @@ import {
 	Mesh,
 	MeshBuilder,
 	Nullable,
-	TransformNode,
 	UniversalCamera,
 } from '@babylonjs/core';
 import { AdvancedDynamicTexture, Button, Image } from '@babylonjs/gui';
@@ -29,21 +29,19 @@ import cementImage from '../../public/textures/cement.jpg';
 import { GroundMesh } from '@babylonjs/core/Meshes/groundMesh';
 import { round } from '../helpers/roundTo';
 
-const MOUSE_SENSITIVITY = 0.0002;
 const MAP_SIZE = 80;
-const GRID = 0.25;
+const GRID = 0.5;
 
-const BLOCK_HEIGHT = 0.5;
+const BLOCK_HEIGHT = 1;
 
 export class BuilderScene {
 	private readonly _scene: Scene;
 	private readonly _ground: GroundMesh;
-	private readonly _player: TransformNode;
 	private readonly _activeCamera: Camera;
-	private readonly _cameraNode: TransformNode;
 	private _keys = { left: false, right: false, forward: false, back: false };
 	private _meshes: Mesh[] = []; // TODO make more efficient storage structure based on 2d grid of coordinates
 	private _lookAtPoint: Nullable<Vector3> = null;
+	private _pickedMesh: Nullable<AbstractMesh> = null;
 	private readonly _cementMaterial: StandardMaterial;
 	private _cementBlock: Mesh;
 	private _ghostBlock: Mesh;
@@ -81,18 +79,17 @@ export class BuilderScene {
 		BuilderScene.setupCrosshair();
 
 		// This creates and positions a free camera (non-mesh)
-		const [player, camera, cameraNode] = this.setupPlayerAndCamera(this._scene, _canvas);
-		this._player = player;
+		const camera = this.setupPlayerAndCamera(this._scene, _canvas);
 		this._activeCamera = camera;
-		this._cameraNode = cameraNode;
-		this.setupPointerLock(_canvas, _engine, this._player);
+		this.setupPointerLock(_canvas);
 
 		// // Our built-in 'sphere' shape.
-		const sphere = CreateSphere('sphere', { diameter: 2, segments: 32 }, this._scene);
+		const sphere = CreateSphere('sphere', { diameter: 4, segments: 32 }, this._scene);
 
 		// Move the sphere upward 1/2 its height
-		sphere.position.y = 1;
-		sphere.position.x = -2;
+		sphere.position.y = 2;
+		sphere.position.x = 10;
+		sphere.position.z = 10;
 
 		this._meshes.push(sphere);
 
@@ -105,9 +102,9 @@ export class BuilderScene {
 		this._cementMaterial.specularColor = Color3.Black();
 		this._cementMaterial.emissiveColor = Color3.White();
 		const boxSize = {
-			width: 0.5,
+			width: 1,
 			height: BLOCK_HEIGHT,
-			depth: 1,
+			depth: 2,
 		};
 		this._cementBlock = CreateBox(
 			'box_' + Math.random().toString().substring(2, 9),
@@ -146,40 +143,7 @@ export class BuilderScene {
 		// });
 	}
 
-	private static mouseMove(e: MouseEvent, engine: Engine, player: TransformNode) {
-		const deltaTime = engine.getDeltaTime();
-
-		const movementX = e.movementX || 0;
-
-		const movementY = e.movementY || 0;
-
-		player.rotation.x += movementY * deltaTime * MOUSE_SENSITIVITY;
-		player.rotation.y -= movementX * deltaTime * MOUSE_SENSITIVITY;
-	}
-
-	private changeCallback(canvas: HTMLCanvasElement, engine: Engine, player: TransformNode) {
-		const mouseMove = (evt: MouseEvent) => {
-			BuilderScene.mouseMove(evt, engine, player);
-		};
-		if (document.pointerLockElement === canvas) {
-			// we've got a pointerlock for our element, add a mouselistener
-			document.addEventListener('mousemove', mouseMove, false);
-			document.addEventListener('mousedown', mouseMove, false);
-			document.addEventListener('mouseup', mouseMove, false);
-		} else {
-			// pointer lock is no longer active, remove the callback
-			document.removeEventListener('mousemove', mouseMove, false);
-			document.removeEventListener('mousedown', mouseMove, false);
-			document.removeEventListener('mouseup', mouseMove, false);
-		}
-	}
-
-	private setupPointerLock(canvas: HTMLCanvasElement, engine: Engine, player: TransformNode) {
-		const onPointerLockChange = () => this.changeCallback(canvas, engine, player);
-
-		// register the callback when a pointerlock event occurs
-		document.addEventListener('pointerlockchange', onPointerLockChange, false);
-
+	private setupPointerLock(canvas: HTMLCanvasElement) {
 		// when element is clicked, we're going to request a pointerlock
 		canvas.onclick = function () {
 			// Ask the browser to lock the pointer
@@ -215,6 +179,7 @@ export class BuilderScene {
 			scene
 		);
 		ground.material = mat1;
+		ground.checkCollisions = true;
 
 		return ground;
 	}
@@ -247,11 +212,23 @@ export class BuilderScene {
 
 		// rotate placement block
 		if (evt.keyCode == KEYCODE.KEY_A) {
-			this._placementAngle += (45 / 180) * Math.PI;
+			this.rotateBlockLeft();
 		}
 		if (evt.keyCode == KEYCODE.KEY_E) {
-			this._placementAngle -= (45 / 180) * Math.PI;
+			this.rotateBlockRight();
 		}
+	}
+
+	private rotateBlockLeft() {
+		this.rotateBlock(45);
+	}
+
+	private rotateBlockRight() {
+		this.rotateBlock(-45);
+	}
+
+	private rotateBlock(angle: number) {
+		this._placementAngle += (angle / 180) * Math.PI;
 	}
 
 	private handleKeyDown(evt: KeyboardEvent) {
@@ -269,89 +246,84 @@ export class BuilderScene {
 		}
 	}
 
-	private setupPlayerAndCamera(
-		scene: Scene,
-		canvas: HTMLCanvasElement
-	): [TransformNode, Camera, TransformNode] {
-		const tempCamera = new UniversalCamera('FPS', new Vector3(0, 0, 0), scene);
+	private onLeftMouseClick() {
+		if (this._lookAtPoint) {
+			const newBlock = this._cementBlock.clone(
+				'box_' + Math.random().toString().substring(2, 9)
+			);
+			newBlock.position = new Vector3(
+				round(this._lookAtPoint.x, GRID),
+				round(this._lookAtPoint.y, GRID) + BLOCK_HEIGHT / 2,
+				round(this._lookAtPoint.z, GRID)
+			);
+			newBlock.rotation = new Vector3(0, this._placementAngle, 0);
+			newBlock.checkCollisions = true;
+			this._meshes.push(newBlock);
+		}
+	}
+
+	private deletePointedAtMesh() {
+		if (this._pickedMesh && this._pickedMesh.id !== this._ground.id) {
+			const meshIndex = this._meshes.findIndex((mesh) => mesh.id === this._pickedMesh?.id);
+			const meshToDelete = this._meshes[meshIndex];
+			this._meshes.splice(meshIndex, 1);
+			meshToDelete.dispose();
+		}
+	}
+
+	private onMiddleMouseClick() {
+		this.deletePointedAtMesh();
+	}
+
+	private setupPlayerAndCamera(scene: Scene, canvas: HTMLCanvasElement): UniversalCamera {
+		const tempCamera = new UniversalCamera('FPS', new Vector3(0, 4, 0), scene);
+		tempCamera.keysUp = [KEYCODE.KEY_Z, KEYCODE.KEY_W, KEYCODE.UP];
+		tempCamera.keysDown = [KEYCODE.KEY_S, KEYCODE.DOWN];
+		tempCamera.keysLeft = [KEYCODE.KEY_Q, KEYCODE.LEFT];
+		tempCamera.keysRight = [KEYCODE.KEY_D, KEYCODE.RIGHT];
 		tempCamera.attachControl(canvas, true);
 		tempCamera.checkCollisions = true;
 		tempCamera.ellipsoid = new Vector3(1, 1.8, 1);
+		tempCamera.ellipsoidOffset = new Vector3(0, -0.2, 0);
 		scene.activeCameras?.push(tempCamera);
 
-		const tempPlayer = new TransformNode('player', scene);
-		const tempCameraNode = new TransformNode('camera', scene);
-
 		tempCamera.minZ = 0.0001;
-		tempPlayer.parent = tempCamera;
-		tempCamera.parent = tempCameraNode;
-		tempCameraNode.position.x = 2;
-		tempCameraNode.position.y = 1;
-		tempCameraNode.position.z = 2;
-		tempCameraNode.rotation = new Vector3(0, (45 / 180) * Math.PI, 0);
-		tempCamera.applyGravity = true;
 		scene.gravity = new Vector3(0, -9.81, 0);
+		tempCamera.applyGravity = true;
 
 		// Event listener for mouse keys
 		canvas.addEventListener('pointerup', () => {
 			// ignore up events
 		});
-		canvas.addEventListener('pointerdown', () => {
+		canvas.addEventListener('pointerdown', (evt) => {
 			console.log('click');
 
-			if (this._lookAtPoint) {
-				const newBlock = this._cementBlock.clone(
-					'box_' + Math.random().toString().substring(2, 9)
-				);
-				newBlock.position = new Vector3(
-					round(this._lookAtPoint.x, GRID),
-					round(this._lookAtPoint.y, GRID) + BLOCK_HEIGHT / 2,
-					round(this._lookAtPoint.z, GRID)
-				);
-				newBlock.rotation = new Vector3(0, this._placementAngle, 0);
-				this._meshes.push(newBlock);
+			if (evt.button === 0) {
+				this.onLeftMouseClick();
+			} else if (evt.button === 1) {
+				this.onMiddleMouseClick();
 			}
 		});
 
 		// Event listener for WASD movement keys
 		window.addEventListener('keydown', (evt: KeyboardEvent) => this.handleKeyDown(evt), false);
 		window.addEventListener('keyup', (evt: KeyboardEvent) => this.handleKeyUp(evt), false);
+		window.addEventListener(
+			'wheel',
+			(evt: WheelEvent) => {
+				this.rotateBlock(evt.deltaY > 0 ? 45 : -45);
+			},
+			false
+		);
 
-		return [tempPlayer, tempCamera, tempCameraNode];
-	}
-
-	private updateMovement() {
-		const cameraDirection = this._activeCamera
-			.getForwardRay()
-			.direction.normalizeFromLength(10);
-		const cameraDirectionPlane = new Vector3(cameraDirection.x, 0, cameraDirection.z);
-		if (this._keys.left) {
-			this._cameraNode.position.addInPlace(
-				cameraDirectionPlane.applyRotationQuaternion(
-					Quaternion.FromEulerAngles(0, Math.PI / 2, 0)
-				)
-			);
-		}
-		if (this._keys.right) {
-			this._cameraNode.position.addInPlace(
-				cameraDirectionPlane.applyRotationQuaternion(
-					Quaternion.FromEulerAngles(0, -Math.PI / 2, 0)
-				)
-			);
-		}
-		if (this._keys.forward) {
-			this._cameraNode.position.addInPlace(cameraDirectionPlane);
-		}
-		if (this._keys.back) {
-			this._cameraNode.position.addInPlace(cameraDirectionPlane.negate());
-		}
+		return tempCamera;
 	}
 
 	private updateLookAtPoint() {
 		const pickingRay = this._activeCamera.getForwardRay(
 			undefined,
 			undefined,
-			this._cameraNode.position
+			this._activeCamera.position
 		);
 
 		const intersections = pickingRay.intersectsMeshes(this._meshes);
@@ -362,6 +334,7 @@ export class BuilderScene {
 			return;
 		}
 		if (intersections[0].hit && intersections[0].pickedPoint) {
+			this._pickedMesh = intersections[0].pickedMesh;
 			this._lookAtPoint = intersections[0].pickedPoint;
 			this._ghostBlock.position = new Vector3(
 				round(this._lookAtPoint.x, GRID),
@@ -373,7 +346,6 @@ export class BuilderScene {
 	}
 
 	private update() {
-		this.updateMovement();
 		this.updateLookAtPoint();
 	}
 
